@@ -88,6 +88,8 @@ Supervisor knobs: `FLUX_BACKUP_HOURS` (6), `FLUX_BACKUP_KEEP` (10), `FLUX_UPDATE
 
 ## Versions
 
+- 1.0.1: `beammp server-binary` warnings no longer end up inside the captured answer (a process
+  substitution inside `$(...)` wrote its log lines into it).
 - 1.0.0: first release.
 
 ## Licence

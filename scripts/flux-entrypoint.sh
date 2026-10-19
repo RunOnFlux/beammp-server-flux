@@ -173,7 +173,10 @@ start_generation() {
 
   # The build: GitHub's newest stable release, or BEAMMP_VERSION, or the image's own.
   set_state updating
-  answer="$(beammp server-binary 2> >(while IFS= read -r line; do flux_log "server: ${line}"; done))"
+  # Warnings go to a file and are logged after: a process substitution here would write its log
+  # lines into the command substitution, i.e. into the answer.
+  answer="$(beammp server-binary 2>/tmp/flux-server-binary.err)"
+  while IFS= read -r line; do flux_log "server: ${line}"; done </tmp/flux-server-binary.err
   server_bin="$(json_field "${answer}" path)"
   [ -x "${server_bin}" ] || server_bin=/opt/beammp/BeamMP-Server
   flux_log "BeamMP-Server $(json_field "${answer}" version) (${server_bin})"

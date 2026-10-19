@@ -169,5 +169,21 @@ check "a name that is not a backup is refused" "2" "$(status run restore '../x')
 # Status with no server
 check "status with no server" "stopped False" "$(run status | jq1 'print(d["state"], d["online"])')"
 
+# --- The entrypoint: server-binary warnings never reach the answer -------------------------------
+# The real capture line of start_generation, run with a beammp that warns on stderr. A process
+# substitution inside $(...) would write the logged warning into the answer.
+# shellcheck disable=SC2016
+block="$(sed -n '/^  answer="\$(beammp server-binary/,/flux-server-binary.err$/p' scripts/flux-entrypoint.sh)"
+# shellcheck disable=SC2329
+(
+  beammp() { echo '{"path": "/x/BeamMP-Server"}'; echo "binary warning: slow" >&2; }
+  flux_log() { echo "LOG $*" >>"${tmp}/entry.log"; echo "$*"; }
+  answer=""
+  eval "${block}"
+  printf '%s' "${answer}" >"${tmp}/answer.out"
+) >/dev/null
+check "the warning is still logged" "LOG server: binary warning: slow" "$(cat "${tmp}/entry.log")"
+check "server-binary warnings stay out of the answer" '{"path": "/x/BeamMP-Server"}' "$(cat "${tmp}/answer.out")"
+
 printf '%s passed, %s failed\n' "${pass}" "${fail}"
 [ "${fail}" = "0" ]
