@@ -24,8 +24,8 @@ supervisor that:
 
 | Path | Flux mount | What |
 |---|---|---|
-| `/mnt/beammp/data` | `g:` (synced) | `ServerConfig.toml` (generated), `Resources/Client/*.zip` (mods players download), `Resources/Server/<plugin>/` (Lua plugins and their data), `flux/` (settings, bans, disabled mods and plugins, backups, our log) |
-| `/mnt/beammp/server` | `ml:server` (local) | the BeamMP-Server builds downloaded from GitHub, `run/` (the working directory: `ServerConfig.toml` and `Resources` there are links to the data volume, because plugins read them relative to it), the console logs (`logs/`, 10 MB each, the newest 5) |
+| `/mnt/beammp/data` | `g:` (synced) | `ServerConfig.toml` (generated), `Resources/Client/*.zip` (mods players download), `Resources/Server/<plugin>/` (Lua plugins and their data), `flux/` (settings, bans, disabled mods and plugins, backups) |
+| `/mnt/beammp/server` | `ml:server` (local) | the BeamMP-Server builds downloaded from GitHub, `run/` (the working directory: `ServerConfig.toml` and `Resources` there are links to the data volume, because plugins read them relative to it), the console logs (`logs/`, 10 MB each, the newest 5). Also `flux-logs/flux.log` (our supervisor log, 5 MB then one `.1`): local, never synced |
 
 Spec: `g:/mnt/beammp/data|ml:server:/mnt/beammp/server`.
 
@@ -88,6 +88,7 @@ Supervisor knobs: `FLUX_BACKUP_HOURS` (6), `FLUX_BACKUP_KEEP` (10), `FLUX_UPDATE
 
 ## Versions
 
+- 1.0.2: `flux.log` moved off the synced data volume to `/mnt/beammp/server/flux-logs/flux.log` (5 MB, one `.1`; an old one is moved there once); start-up banner; the weekly rebuild only when it has something to apply (new script `.github/ci/needs-rebuild.sh`).
 - 1.0.1: `beammp server-binary` warnings no longer end up inside the captured answer (a process
   substitution inside `$(...)` wrote its log lines into it).
 - 1.0.0: first release.

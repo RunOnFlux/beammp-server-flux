@@ -5,7 +5,12 @@
 # the deploy's env, keeps the server on the newest stable release, gives the hub a console, a player
 # list, bans (the built-in FluxAdmin Lua plugin), mods, plugins and backups, stops it cleanly and
 # restarts it in place. See README.md.
-FROM ubuntu:24.04
+#
+# The base. CI builds it pinned to the digest it resolved and records that digest in the
+# org.opencontainers.image.base.digest label, which the scheduled check compares against
+# (.github/ci/needs-rebuild.sh).
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG FLUX_IMAGE_VERSION=dev
@@ -14,6 +19,7 @@ ARG FLUX_IMAGE_VERSION=dev
 ARG BEAMMP_SERVER_VERSION=3.9.3
 
 RUN apt-get update -y && \
+    apt-get upgrade -y --no-install-recommends && \
     apt-get install -y --no-install-recommends ca-certificates curl procps tzdata python3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 

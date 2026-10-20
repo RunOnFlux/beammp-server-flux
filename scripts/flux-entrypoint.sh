@@ -40,6 +40,9 @@ run="${s}/run"
 
 rm -f "${FLUX_RESTART_MARKER}" "${FLUX_GENERATION_FILE}"
 mkdir -p "${s}" "${d}/flux" "${run}" "${FLUX_GAME_LOG_DIR}" "${d}/Resources/Client" "${d}/Resources/Server"
+# An older image kept flux.log on the synced data volume: move it here, once.
+flux_log_migrate "${FLUX_DATA_DIR}/flux/flux.log"
+flux_banner "BeamMP"
 set_state() { printf '%s\n' "$1" >"${FLUX_STATE_FILE}"; }
 set_state starting
 
@@ -218,6 +221,7 @@ start_generation() {
   ln -sfn "${d}/ServerConfig.toml" "${run}/ServerConfig.toml"
   ln -sfn "${d}/Resources" "${run}/Resources"
 
+  flux_banner "BeamMP"
   flux_log "starting the server (generation ${generation})"
   (
     # The console FIFO's writing end is the supervisor's alone (see wait_for_generation): closed
