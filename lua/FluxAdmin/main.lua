@@ -16,23 +16,32 @@
 -- A ban matches the BeamMP account id when it has one (a name can be changed on the forum), else
 -- the name (case-insensitive), else the IP. Guests have no account id.
 --
+-- After the bans, the whitelist in <data>/flux/whitelist.json (written by `flux-beammp
+-- whitelist-*`, read on every join): while it is enabled, only the players on it get in, matched
+-- the same way (account id when the entry has one, else the name).
+--
+--   {"enabled": true, "players": [{"beammp": "123456", "name": "Someone"}]}
+--
 -- The image puts this folder back on every start: edits here are lost. Your own plugins go in
 -- folders of their own next to it.
 
 local DATA = os.getenv("FLUX_DATA_DIR") or "/mnt/beammp/data"
 local BANS = DATA .. "/flux/bans.json"
+local WHITELIST = DATA .. "/flux/whitelist.json"
 
-local function readBans()
-  local f = io.open(BANS, "r")
+local function readJson(path, what)
+  local f = io.open(path, "r")
   if not f then return {} end
   local text = f:read("a")
   f:close()
   if not text or text == "" then return {} end
   local ok, data = pcall(Util.JsonDecode, text)
   if ok and type(data) == "table" then return data end
-  print("FluxAdmin: " .. BANS .. " is not valid JSON; no bans are enforced until it is fixed")
+  print("FluxAdmin: " .. path .. " is not valid JSON; no " .. what .. " enforced until it is fixed")
   return {}
 end
+
+local function readBans() return readJson(BANS, "bans are") end
 
 local function lower(s) return string.lower(tostring(s or "")) end
 
@@ -61,12 +70,33 @@ local function banFor(name, ids)
   return nil
 end
 
+-- True when the whitelist is off, or this player is on it.
+local function whitelisted(name, ids)
+  local wl = readJson(WHITELIST, "whitelist is")
+  if wl.enabled ~= true or type(wl.players) ~= "table" or #wl.players == 0 then return true end
+  local beammp = ids and ids.beammp and tostring(ids.beammp) or nil
+  for _, p in ipairs(wl.players) do
+    if type(p) == "table" then
+      if p.beammp and p.beammp ~= "" then
+        if beammp and tostring(p.beammp) == beammp then return true end
+      elseif p.name and p.name ~= "" and lower(p.name) == lower(name) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
 function FluxOnAuth(name, role, isGuest, identifiers)
   local b = banFor(name, identifiers)
   if b then
     print("FluxAdmin: refused " .. tostring(name) .. " (banned)")
     local why = (b.reason and b.reason ~= "") and (": " .. b.reason) or ""
     return "You are banned from this server" .. why
+  end
+  if not whitelisted(name, identifiers) then
+    print("FluxAdmin: refused " .. tostring(name) .. " (not on the whitelist)")
+    return "This server is whitelisted: ask its owner to add you"
   end
 end
 
@@ -142,4 +172,4 @@ end
 
 MP.RegisterEvent("onPlayerAuth", "FluxOnAuth")
 MP.RegisterEvent("onConsoleInput", "FluxOnConsole")
-print("FluxAdmin ready (bans: " .. BANS .. ")")
+print("FluxAdmin ready (bans: " .. BANS .. ", whitelist: " .. WHITELIST .. ")")

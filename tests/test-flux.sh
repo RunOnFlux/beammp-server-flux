@@ -156,9 +156,66 @@ check "a ban with nothing to match is refused" "2" "$(status run ban '{"reason":
 check "unban by account id" "1" "$(run unban '{"beammp": "4242"}' | jq1 'print(len(d["bans"]))')"
 check "unbanning nobody says so" "2" "$(status run unban '{"name": "ghost"}')"
 
+# Whitelist
+check "an empty whitelist cannot be turned on" "2" "$(status run whitelist-enable on)"
+check "a player by account id" "1" "$(run whitelist-add '{"name": "Alice", "beammp": "42"}' | jq1 'print(len(d["whitelist"]["players"]))')"
+check "a player by name" "2" "$(run whitelist-add '{"name": "Bob"}' | jq1 'print(len(d["whitelist"]["players"]))')"
+check "the same account again replaces it" "2" "$(run whitelist-add '{"name": "Alice2", "beammp": "42"}' | jq1 'print(len(d["whitelist"]["players"]))')"
+check "an account id is a number" "2" "$(status run whitelist-add '{"beammp": "x1"}')"
+check "turned on" "True" "$(run whitelist-enable on | jq1 'print(d["whitelist"]["enabled"])')"
+check "files has it" "True 2" "$(run files | jq1 'print(d["whitelist"]["enabled"], len(d["whitelist"]["players"]))')"
+run whitelist-remove '{"beammp": "42"}' >/dev/null
+check "the last one off turns it off" "False 0" "$(run whitelist-remove '{"name": "bob"}' | jq1 'print(d["whitelist"]["enabled"], len(d["whitelist"]["players"]))')"
+check "removing nobody says so" "2" "$(status run whitelist-remove '{"name": "ghost"}')"
+
+# Mods by link: resolution, names, and a real download from a local web server
+check "a direct link is kept" "https://example.com/a.zip" "$(py 'print(b.resolve_mod_url("https://example.com/a.zip"))')"
+check "a repository download link is kept" "https://www.beamng.com/resources/x.1/download?version=3" "$(py 'print(b.resolve_mod_url("https://www.beamng.com/resources/x.1/download?version=3"))')"
+check "something that is not a link is refused" "2" "$(status run mod-install-url 'file:///etc/passwd')"
+check "the newest version on a repository page" "x.12/download?version=9" "$(py '
+class R:
+    def __init__(s, *a, **k): pass
+    def __enter__(s): return s
+    def __exit__(s, *a): pass
+    def read(s, n): return b"<a href=\"resources/x.12/download?version=7\"> <a href=\"resources/x.12/download?version=9\"> <a href=\"resources/other.3/download?version=99\">"
+b.urllib.request.urlopen = R
+print(b.resolve_mod_url("https://www.beamng.com/resources/x.12/").split("resources/")[1])')"
+check "a name from the address, made safe" "my_car (v2).zip" "$(py '
+class R:
+    headers = {}
+    def geturl(s): return "https://cdn.example/mods/my%3Bcar%20(v2).ZIP?sig=1"
+print(b.file_name_of(R(), ""))')"
+check "a name from Content-Disposition" "etk.zip" "$(py '
+class R:
+    headers = {"Content-Disposition": "attachment; filename=\"etk.zip\""}
+    def geturl(s): return "https://x/y"
+print(b.file_name_of(R(), ""))')"
+web="${tmp}/web" && mkdir -p "${web}"
+python3 -c 'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],"w"); z.writestr("levels/dl_map/info.json","{}"); z.close()' "${web}/dl_map.zip"
+printf 'not a zip' >"${web}/page.zip"
+port=$((20000 + RANDOM % 20000))
+python3 -m http.server "${port}" --bind 127.0.0.1 --directory "${web}" >/dev/null 2>&1 &
+webpid=$!
+sleep 1
+waitdl() { for _ in $(seq 1 50); do s="$(run files | jq1 "print(([j for j in d['downloads'] if j['id']=='$1'] or [{'state':'gone'}])[0]['state'])")"; [ "${s}" != "downloading" ] && { echo "${s}"; return; }; sleep 0.2; done; echo timeout; }
+id="$(run mod-install-url "http://127.0.0.1:${port}/dl_map.zip" | jq1 'print(d["download"]["id"])')"
+check "a download by link finishes" "done" "$(waitdl "${id}")"
+check "and the mod and its map are installed" "dl_map.zip ['dl_map']" "$(run files | jq1 "j=[j for j in d['downloads'] if j['id']=='${id}'][0]; print(j['mod'], j['maps'])")"
+check "the partial file is gone" "0" "$(find "${tmp}/server/downloads" -name '*.part' | wc -l)"
+id2="$(run mod-install-url "http://127.0.0.1:${port}/page.zip" | jq1 'print(d["download"]["id"])')"
+check "a link that is not a zip ends in an error" "error" "$(waitdl "${id2}")"
+id3="$(run mod-install-url "http://127.0.0.1:${port}/missing.zip" | jq1 'print(d["download"]["id"])')"
+check "a 404 says so" "the site answered HTTP 404" "$(waitdl "${id3}" >/dev/null; run files | jq1 "print([j for j in d['downloads'] if j['id']=='${id3}'][0]['error'])")"
+check "a finished download is dismissed" "0" "$(status run download-dismiss "${id}")"
+check "a bad id is refused" "2" "$(status run download-dismiss '../x')"
+printf '{"id": "1700000000000", "state": "downloading", "pid": 999999, "started": %s}\n' "$(date +%s)" >"${tmp}/server/downloads/1700000000000.json"
+check "a download whose process died is interrupted" "error" "$(run files | jq1 "print([j for j in d['downloads'] if j['id']=='1700000000000'][0]['state'])")"
+kill "${webpid}" 2>/dev/null
+
 # Backups and restore
 check "a backup" "0" "$(status run backup manual force)"
 name="$(run backups | jq1 'print(d["backups"][0]["name"])')"
+check "the backup holds the whitelist" "yes" "$(tar -tzf "${data}/flux/backups/$(run backups | jq1 'print(d["backups"][0]["name"])')" | grep -q 'flux/whitelist.json' && echo yes)"
 check "the backup holds the config and plugins, not the client mods" "yes no" "$(tar -tzf "${data}/flux/backups/${name}" | grep -q 'Resources/Server/Loose' && echo yes) $(tar -tzf "${data}/flux/backups/${name}" | grep -q 'Resources/Client' && echo yes || echo no)"
 rm -rf "${data}/Resources/Server/Loose"
 check "a restore is accepted" "0" "$(status run restore "${name}")"

@@ -12,6 +12,11 @@ For the hub (flux-beammp ...):
                                    Resources/Client to every player)
     mod-protect <file> on|off      a protected mod is not sent: players must already have it
     mod-remove <file>
+    mod-install-url <url>          a mod downloaded by the server itself: a BeamNG.com repository page
+                                   (beamng.com/resources/<mod>.<id>/, its newest version) or any link to
+                                   a .zip. In the background (a map can be gigabytes): answers at once
+                                   with the download, which `files` follows under "downloads"
+    download-dismiss <id>          a finished download out of the list (a running one is cancelled)
     plugin-install <file>          a .zip of a server plugin (or a plugin + its client mod), laid out the
                                    way plugins ship: see install_plugin_tree
     plugin-install-url <url>       the same, downloaded from a GitHub release (github.com only)
@@ -24,6 +29,10 @@ For the hub (flux-beammp ...):
     ban '<json>'                   {"name", "beammp", "ip", "reason"} into flux/bans.json (FluxAdmin
                                    refuses them on join)
     unban '<json>'                 {"beammp"} or {"name"} or {"ip"}: every matching ban is lifted
+    whitelist-enable on|off        only the players on flux/whitelist.json may join (FluxAdmin, on join);
+                                   refused while the list is empty, which would lock everyone out
+    whitelist-add '<json>'         {"name", "beammp"}: a player on the whitelist
+    whitelist-remove '<json>'      {"beammp"} or {"name"}
     backups                        the backups in flux/backups
     restore <backup>               the server stops, a safety backup is taken, the backup is put back,
                                    the server starts again (the supervisor does it)
@@ -39,6 +48,7 @@ For the supervisor:
     backup <why> [force]
     apply-restore
     apply-plugin-ops               the queued plugin changes, before the server starts
+    mod-download <id>              the download mod-install-url started (run detached by it)
 
 Names are file names, never paths: anything that would leave its folder is refused.
 """
@@ -55,6 +65,8 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -71,6 +83,10 @@ PLUGIN_OPS = os.path.join(STATE_DIR, "plugin-ops.json")
 SETTINGS = os.path.join(STATE_DIR, "settings.json")
 ENV_APPLIED = os.path.join(STATE_DIR, "env-applied.json")
 BANS = os.path.join(STATE_DIR, "bans.json")
+WHITELIST = os.path.join(STATE_DIR, "whitelist.json")
+# Mod downloads, the partial file and the job's progress: on the LOCAL server volume, so a download
+# in progress is never Syncthing traffic. Only the finished mod lands on the synced data volume.
+DOWNLOADS = os.environ.get("FLUX_DOWNLOADS_DIR", os.path.join(SERVER, "downloads"))
 CONFIG = os.path.join(DATA, "ServerConfig.toml")
 BACKUPS = os.path.join(STATE_DIR, "backups")
 BACKUP_REASONS = os.path.join(BACKUPS, "reasons.json")
@@ -91,7 +107,7 @@ ASSET = os.environ.get("FLUX_SERVER_ASSET", "BeamMP-Server.ubuntu.24.04.x86_64")
 # client mods: they are often gigabytes, are the owner's own uploads, and are synced to every
 # standby node already. Their names are listed in the backup (flux/mods-list.json) so a restore
 # can say what is missing.
-BACKUP_ITEMS = ["ServerConfig.toml", "Resources/Server", "flux/settings.json", "flux/bans.json", "flux/plugins-disabled", "flux/mods-list.json"]
+BACKUP_ITEMS = ["ServerConfig.toml", "Resources/Server", "flux/settings.json", "flux/bans.json", "flux/whitelist.json", "flux/plugins-disabled", "flux/mods-list.json"]
 BACKUP_NAME = re.compile(r"^\d{8}-\d{6}-beammp\.tar\.gz$")
 
 # The maps every BeamNG.drive install has (folder names under levels/), as Map takes them. The 14
@@ -437,6 +453,11 @@ def check_zip(src):
 def cmd_mod_install(src):
     name = safe_mod(upload_name(src).replace("%20", " "))
     check_zip(src)
+    out(install_mod_file(src, name))
+
+
+def install_mod_file(src, name):
+    """A checked .zip into Resources/Client as <name>, and BeamMP told to reload its mods."""
     os.makedirs(CLIENT, exist_ok=True)
     # A disabled copy of the same mod is replaced too: one file per name.
     try:
@@ -452,7 +473,194 @@ def cmd_mod_install(src):
         shutil.copyfile(src, dst + ".flux-part")
         os.replace(dst + ".flux-part", dst)
     reload_mods()
-    out({"ok": True, "mod": name, "size": os.path.getsize(dst), "maps": mod_maps(dst)})
+    return {"ok": True, "mod": name, "size": os.path.getsize(dst), "maps": mod_maps(dst)}
+
+
+# ------------------------------------------------------------------------------------------------
+# Mods by link. BeamNG.com's repository serves a mod at resources/<slug>.<id>/download?version=<n>
+# with no login (a 302 to its storage, measured 2026-10-22); the page itself carries that link for
+# the newest version, while /download without a version answers 403. A mod or a map pack can be
+# gigabytes, longer than any request from the panel may last: the download runs DETACHED and its
+# job file says how far it is.
+# ------------------------------------------------------------------------------------------------
+
+BEAMNG_PAGE = re.compile(r"^https://(www\.)?beamng\.com/resources/([\w%.-]+\.\d+)/?(\?.*)?(#.*)?$")
+BEAMNG_DOWNLOAD = re.compile(r"resources/([\w%.-]+\.\d+)/download\?version=(\d+)")
+DOWNLOAD_ID = re.compile(r"^\d{13}$")
+UA = {"User-Agent": "Mozilla/5.0 (runonflux beammp-server-flux)"}
+
+
+def resolve_mod_url(url):
+    """The link to download: a repository page becomes its newest version's download link."""
+    url = str(url or "").strip()
+    if not re.match(r"^https?://[^\s/]+/\S*$", url):
+        fail("not a link: paste the address of a BeamNG.com repository page or of a .zip")
+    page = BEAMNG_PAGE.match(url)
+    if not page or "/download" in url:
+        return url
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
+            html = r.read(4 * 1024 * 1024).decode("utf-8", "replace")
+    except OSError as e:
+        fail(f"could not open the repository page: {e}")
+    found = [m for m in BEAMNG_DOWNLOAD.finditer(html) if m.group(1) == page.group(2)]
+    if not found:
+        fail("no download on that page: is the mod still on the repository?")
+    best = max(found, key=lambda m: int(m.group(2)))
+    return f"https://www.beamng.com/resources/{best.group(1)}/download?version={best.group(2)}"
+
+
+def job_path(job_id):
+    if not DOWNLOAD_ID.match(str(job_id)):
+        fail("not a download id")
+    return os.path.join(DOWNLOADS, f"{job_id}.json")
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError, TypeError):
+        return False
+    # A finished child of a shell that never waited for it is a zombie: gone for our purposes.
+    return "Z" not in ((read(f"/proc/{int(pid)}/stat") or "").rsplit(")", 1)[-1].split()[:1] or ["Z"])
+
+
+def download_rows(now=None):
+    """The downloads, newest first. A finished one is kept for an hour; one whose process is gone
+    (the container restarted under it) is reported as interrupted."""
+    now = now or time.time()
+    rows = []
+    for name in sorted(os.listdir(DOWNLOADS)) if os.path.isdir(DOWNLOADS) else []:
+        if not name.endswith(".json") or not DOWNLOAD_ID.match(name[:-5]):
+            continue
+        path = os.path.join(DOWNLOADS, name)
+        job = read_json(path, {})
+        if not job:
+            continue
+        if job.get("state") == "downloading" and not pid_alive(job.get("pid")):
+            job.update(state="error", error="the download was interrupted (the server restarted): start it again")
+            write_text(path, json.dumps(job) + "\n")
+            remove_quietly(os.path.join(DOWNLOADS, f"{job['id']}.part"))
+        if job.get("state") != "downloading" and now - float(job.get("finished") or job.get("started") or 0) > 3600:
+            remove_quietly(path)
+            continue
+        rows.append({k: v for k, v in job.items() if k != "pid"})
+    return sorted(rows, key=lambda j: j["id"], reverse=True)
+
+
+def remove_quietly(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def cmd_mod_install_url(url):
+    link = resolve_mod_url(url)
+    if any(j["state"] == "downloading" for j in download_rows()):
+        fail("a download is already running: wait for it to finish")
+    os.makedirs(DOWNLOADS, exist_ok=True)
+    job_id = str(int(time.time() * 1000))
+    job = {"id": job_id, "url": str(url).strip(), "link": link, "state": "downloading", "bytes": 0,
+           "total": None, "name": None, "started": int(time.time())}
+    # Detached: its own session, no inherited descriptors (the console FIFO is fd 3 in the
+    # supervisor), so it outlives the appexec that asked for it.
+    proc = subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "mod-download", job_id],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            close_fds=True, start_new_session=True)
+    # Written once, with the pid, AFTER the start: the downloader waits for this file.
+    job["pid"] = proc.pid
+    write_text(job_path(job_id), json.dumps(job) + "\n")
+    out({"ok": True, "download": {k: v for k, v in job.items() if k != "pid"}})
+
+
+def file_name_of(response, link):
+    """The mod's file name: Content-Disposition's, else the last part of the final address."""
+    cd = response.headers.get("Content-Disposition") or ""
+    m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", cd)
+    raw = m.group(1) if m else urllib.request.url2pathname(urllib.parse.urlparse(response.geturl() or link).path).rsplit("/", 1)[-1]
+    raw = urllib.parse.unquote(raw).strip()
+    base = re.sub(r"\.zip$", "", raw, flags=re.I)
+    base = re.sub(r"[^A-Za-z0-9_.+()\- ]", "_", base).strip(" .")[:110] or "mod"
+    return f"{base}.zip"
+
+
+def cmd_mod_download(job_id):
+    path = job_path(job_id)
+    for _ in range(50):
+        job = read_json(path, {})
+        if job:
+            break
+        time.sleep(0.1)
+    if not job:
+        fail("no such download")
+    job["pid"] = os.getpid()
+    part = os.path.join(DOWNLOADS, f"{job_id}.part")
+
+    def save(**fields):
+        job.update(fields)
+        write_text(path, json.dumps(job) + "\n")
+
+    try:
+        with urllib.request.urlopen(urllib.request.Request(job["link"], headers=UA), timeout=60) as r:
+            name = file_name_of(r, job["link"])
+            total = int(r.headers.get("Content-Length") or 0) or None
+            if total and total > MAX_UPLOAD_BYTES:
+                raise ValueError("the file is over 4 GB")
+            if total and total > shutil.disk_usage(DOWNLOADS).free - 64 * 1024 ** 2:
+                raise ValueError("not enough free disk for it")
+            save(name=name, total=total)
+            done, last = 0, 0.0
+            with open(part, "wb") as f:
+                while True:
+                    chunk = r.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    done += len(chunk)
+                    if done > MAX_UPLOAD_BYTES:
+                        raise ValueError("the file is over 4 GB")
+                    f.write(chunk)
+                    if time.time() - last > 1:
+                        save(bytes=done)
+                        last = time.time()
+        save(bytes=done)
+        with open(part, "rb") as f:
+            if f.read(4) != b"PK\x03\x04":
+                raise ValueError("that link is not a .zip: on BeamNG.com, paste the mod's page; elsewhere, a direct download link")
+        try:
+            with zipfile.ZipFile(part) as z:
+                z.infolist()
+        except zipfile.BadZipFile:
+            raise ValueError("the ZIP archive is damaged") from None
+        if shutil.disk_usage(CLIENT if os.path.isdir(CLIENT) else DATA).free < os.path.getsize(part) + 64 * 1024 ** 2:
+            raise ValueError("not enough free disk on the data volume for it")
+        result = install_mod_file(part, safe_mod(name))
+        save(state="done", mod=result["mod"], size=result["size"], maps=result["maps"], finished=int(time.time()))
+    except (OSError, ValueError, SystemExit) as e:
+        if isinstance(e, urllib.error.HTTPError):
+            message = f"the site answered HTTP {e.code}"
+        elif isinstance(e, SystemExit):
+            message = "it could not be installed"
+        else:
+            message = getattr(e, "reason", None) or str(e) or "the download failed"
+        save(state="error", error=str(message), finished=int(time.time()))
+    finally:
+        remove_quietly(part)
+
+
+def cmd_download_dismiss(job_id):
+    path = job_path(job_id)
+    job = read_json(path, {})
+    if not job:
+        fail("no such download")
+    if job.get("state") == "downloading" and pid_alive(job.get("pid")):
+        try:
+            os.kill(int(job["pid"]), 15)
+        except OSError:
+            pass
+        remove_quietly(os.path.join(DOWNLOADS, f"{job_id}.part"))
+    remove_quietly(path)
+    out({"ok": True, "downloads": download_rows()})
 
 
 def move(src, dst):
@@ -931,6 +1139,55 @@ def cmd_unban(raw):
 
 
 # ------------------------------------------------------------------------------------------------
+# Whitelist (enforced by the FluxAdmin plugin on join, after the bans)
+# ------------------------------------------------------------------------------------------------
+
+def whitelist():
+    wl = read_json(WHITELIST, {})
+    players = [p for p in wl.get("players", []) if isinstance(p, dict) and (p.get("name") or p.get("beammp"))]
+    return {"enabled": bool(wl.get("enabled")) and bool(players), "players": players}
+
+
+def save_whitelist(wl):
+    write_text(WHITELIST, json.dumps(wl, indent=2, ensure_ascii=False) + "\n")
+    out({"ok": True, "whitelist": wl})
+
+
+def cmd_whitelist_enable(on):
+    wl = whitelist()
+    if to_bool(on) and not wl["players"]:
+        fail("add at least one player first: an empty whitelist would turn everyone away, you too")
+    wl["enabled"] = to_bool(on)
+    save_whitelist(wl)
+
+
+def cmd_whitelist_add(raw):
+    p = parse_obj(raw)
+    entry = {"name": clean(p.get("name"), 64), "beammp": clean(p.get("beammp"), 20)}
+    if entry["beammp"] and not entry["beammp"].isdigit():
+        fail("a BeamMP account id is a number")
+    if not (entry["name"] or entry["beammp"]):
+        fail("a player name or a BeamMP account id")
+    wl = whitelist()
+    same = (lambda x: str(x.get("beammp") or "") == entry["beammp"]) if entry["beammp"] \
+        else (lambda x: not x.get("beammp") and str(x.get("name") or "").lower() == entry["name"].lower())
+    wl["players"] = [x for x in wl["players"] if not same(x)] + [{k: v for k, v in entry.items() if v}]
+    save_whitelist(wl)
+
+
+def cmd_whitelist_remove(raw):
+    p = parse_obj(raw)
+    wl = whitelist()
+    keep = [x for x in wl["players"] if not (
+        (p.get("beammp") and str(x.get("beammp") or "") == str(p["beammp"]))
+        or (not p.get("beammp") and p.get("name") and str(x.get("name") or "").lower() == str(p["name"]).lower()))]
+    if len(keep) == len(wl["players"]):
+        fail("not on the whitelist")
+    # The last one off turns the whitelist off: an empty one on would lock everyone out.
+    save_whitelist({"enabled": wl["enabled"] and bool(keep), "players": keep})
+
+
+# ------------------------------------------------------------------------------------------------
 # Status: the supervisor's state, the AuthKey as the backend answered it, the information packet
 # ------------------------------------------------------------------------------------------------
 
@@ -1039,6 +1296,8 @@ def cmd_files():
         "maps": {"stock": [{"path": f"/levels/{f}/info.json", "folder": f, "name": n} for f, n in STOCK_MAPS], "modded": modded},
         "mapAvailable": map_available(settings["Map"], mods),
         "bans": read_json(BANS, []),
+        "whitelist": whitelist(),
+        "downloads": download_rows(),
     })
 
 
@@ -1314,6 +1573,10 @@ def main(argv):
         "backup": (cmd_backup, (1, 2)), "apply-restore": (cmd_apply_restore, 0),
         "plugins-apply": (cmd_plugins_apply, 0), "plugins-discard": (cmd_plugins_discard, 0),
         "apply-plugin-ops": (cmd_apply_plugin_ops, 0),
+        "mod-install-url": (cmd_mod_install_url, 1), "mod-download": (cmd_mod_download, 1),
+        "download-dismiss": (cmd_download_dismiss, 1),
+        "whitelist-enable": (cmd_whitelist_enable, 1), "whitelist-add": (cmd_whitelist_add, 1),
+        "whitelist-remove": (cmd_whitelist_remove, 1),
     }
     if not argv or argv[0] not in commands:
         print(__doc__, file=sys.stderr)

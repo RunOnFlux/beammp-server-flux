@@ -67,8 +67,10 @@ Supervisor knobs: `FLUX_BACKUP_HOURS` (6), `FLUX_BACKUP_KEEP` (10), `FLUX_UPDATE
 | `files` | settings, mods (on/off, protected, the maps inside), plugins, stock and modded maps, bans |
 | `set-map <path>` | refused unless a stock map or an enabled mod has it |
 | `mod-install <file>` / `mod-enable <file> on\|off` / `mod-protect <file> on\|off` / `mod-remove <file>` | `.zip` into `Resources/Client`; off = `flux/mods-disabled` |
+| `mod-install-url <url>` / `download-dismiss <id>` | a mod the server downloads itself: a BeamNG.com repository page (its newest version) or any link to a `.zip`. Detached, so a map pack of gigabytes needs no long request: `files` shows it under `downloads` (bytes, total, done or the error). The partial file is on the local server volume (`downloads/`), never synced |
 | `plugin-install <zip>` / `plugin-install-url <github release zip>` / `plugin-enable <name> on\|off` / `plugin-remove <name>` | any of the four ways plugins ship (a Resources folder, Server/Client, a plugin folder, loose files); an update keeps the files the plugin wrote |
 | `ban '{"name","beammp","ip","reason"}'` / `unban '{...}'` | `flux/bans.json`, read by FluxAdmin on every join |
+| `whitelist-enable on\|off` / `whitelist-add '{"name","beammp"}'` / `whitelist-remove '{...}'` | `flux/whitelist.json`: while on, FluxAdmin lets only those players in (account id when the entry has one, else the name). Cannot be turned on empty; the last one removed turns it off |
 | `backups` / `restore <backup>` / `restart [why]` | |
 
 `/tmp/flux-generation` holds `<generation> <epoch>`: a restart is over when it changes.
@@ -88,6 +90,7 @@ Supervisor knobs: `FLUX_BACKUP_HOURS` (6), `FLUX_BACKUP_KEEP` (10), `FLUX_UPDATE
 
 ## Versions
 
+- 1.0.3: mods by link (`mod-install-url`: a BeamNG.com repository page or a `.zip` link, downloaded in the background; a 159 MB mod from the repository in about 6 s, measured); a whitelist enforced by FluxAdmin (`whitelist-*`, in the backups).
 - 1.0.2: `flux.log` moved off the synced data volume to `/mnt/beammp/server/flux-logs/flux.log` (5 MB, one `.1`; an old one is moved there once); start-up banner; the weekly rebuild only when it has something to apply (new script `.github/ci/needs-rebuild.sh`).
 - 1.0.1: `beammp server-binary` warnings no longer end up inside the captured answer (a process
   substitution inside `$(...)` wrote its log lines into it).

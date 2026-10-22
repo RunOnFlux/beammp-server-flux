@@ -56,5 +56,6 @@ A change to what the image does bumps `VERSION` and gets a line under "Versions"
   `flux/mods-disabled`; a non-zip there only draws a warning.
 - **Lua's JSON encodes an empty table as `{}`**: FluxAdmin spells out an empty player list.
 - **Flux stops a container with Docker's default 10 seconds.** Measured stop: 2.5 s.
+- **Mod downloads run detached** (`mod-install-url` starts `mod-download <id>` in its own session, no inherited fds): an appexec cannot last as long as a map pack takes. The job file and the partial file live in `$FLUX_SERVER_DIR/downloads` (local); only the finished `.zip` reaches the data volume. BeamNG.com's `/download` without `?version=` answers 403, so a repository page is read for its newest version's link.
 - **`flux.log` is local** (`$FLUX_SERVER_DIR/flux-logs/flux.log`, 5 MB then one `.1`), never on the synced data volume: a constantly written file there is constant Syncthing traffic. `flux_log_migrate` moves an old one off the data volume at start. `flux_banner` prints the FluxCloud banner at container start and every generation; its text is tested.
 - **The scheduled CI run publishes only with something to apply** (`.github/ci/needs-rebuild.sh`): urgent security updates, or commits on main since the published `:latest` (label `org.opencontainers.image.revision`) that touch the image inputs.
