@@ -696,10 +696,16 @@ def cmd_mod_protect(name, on):
     # `protectmod Zz Space.zip true` answers "Expected 2 argument(s), instead got 3" and changes nothing).
     live = console(f'protectmod "{name}" {"true" if on else "false"}')
     if live:
-        time.sleep(0.5)
-        db = mods_db()  # the server wrote the file: clean it
-        # `live` only says the line was typed in: the file says whether the server took it.
-        if not (isinstance(db.get(name), dict) and bool(db[name].get("protected")) == on):
+        # `live` only says the line was typed in: the file says whether the server took it. The server
+        # writes mods.json itself, a moment later (a few seconds on a slow node).
+        took = False
+        for _ in range(10):
+            time.sleep(0.5)
+            db = mods_db()  # also cleans the file
+            if isinstance(db.get(name), dict) and bool(db[name].get("protected")) == on:
+                took = True
+                break
+        if not took:
             fail("the server did not change the mod's protection (see the console)")
     else:
         db = mods_db()
