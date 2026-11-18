@@ -111,13 +111,16 @@ updater() {
     sleep $((FLUX_UPDATE_CHECK_HOURS * 3600))
     answer="$(beammp update-available 2>/dev/null)"
     grep -q '"update": true' <<<"${answer}" || continue
-    players="$(beammp status 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("players") or 0)' 2>/dev/null)"
-    if [ "${players:-0}" = "0" ]; then
+    # "unknown" when the count cannot be had (the information packet is off, or nothing answers):
+    # an update never restarts a server whose players it cannot count.
+    players="$(beammp status 2>/dev/null | python3 -c 'import json,sys; p=json.load(sys.stdin).get("players"); print("unknown" if p is None else p)' 2>/dev/null)"
+    players="${players:-unknown}"
+    if [ "${players}" = "0" ]; then
       flux_log "a new BeamMP-Server release is out (${answer}); nobody is playing, so restarting onto it"
       printf 'planned: BeamMP update\n' >"${FLUX_RESTART_MARKER}"
       flux_console exit || true
     else
-      flux_log "a new BeamMP-Server release is out (${answer}); ${players} playing, so it waits"
+      flux_log "a new BeamMP-Server release is out (${answer}); players: ${players}, so it waits"
     fi
   done
 }

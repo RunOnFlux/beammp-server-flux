@@ -155,6 +155,12 @@ check "a ban by IP" "2" "$(run ban '{"ip": "203.0.113.4"}' | jq1 'print(len(d["b
 check "a ban with nothing to match is refused" "2" "$(status run ban '{"reason": "x"}')"
 check "unban by account id" "1" "$(run unban '{"beammp": "4242"}' | jq1 'print(len(d["bans"]))')"
 check "unbanning nobody says so" "2" "$(status run unban '{"name": "ghost"}')"
+# A name ban never replaces, and a name unban never lifts, an account ban of the same name.
+run ban '{"name": "Dupe", "beammp": "777"}' >/dev/null
+check "a name ban beside an account ban of the same name keeps both" "3" "$(run ban '{"name": "Dupe"}' | jq1 'print(len(d["bans"]))')"
+check "unbanning by name lifts the name ban only" "2" "$(run unban '{"name": "Dupe"}' | jq1 'print(len(d["bans"]))')"
+check "the account ban is still there" "1" "$(run ban '{"name": "Dupe", "beammp": "777"}' | jq1 'print(len([b for b in d["bans"] if b.get("beammp") == "777"]))')"
+run unban '{"beammp": "777"}' >/dev/null
 
 # Whitelist
 check "an empty whitelist cannot be turned on" "2" "$(status run whitelist-enable on)"
@@ -167,6 +173,10 @@ check "files has it" "True 2" "$(run files | jq1 'print(d["whitelist"]["enabled"
 run whitelist-remove '{"beammp": "42"}' >/dev/null
 check "the last one off turns it off" "False 0" "$(run whitelist-remove '{"name": "bob"}' | jq1 'print(d["whitelist"]["enabled"], len(d["whitelist"]["players"]))')"
 check "removing nobody says so" "2" "$(status run whitelist-remove '{"name": "ghost"}')"
+run whitelist-add '{"name": "Zed", "beammp": "9"}' >/dev/null
+run whitelist-add '{"name": "Zed"}' >/dev/null
+check "removing a name-only row leaves the account row of the same name" "1" "$(run whitelist-remove '{"name": "zed"}' | jq1 'print(len(d["whitelist"]["players"]))')"
+run whitelist-remove '{"beammp": "9"}' >/dev/null
 
 # Mods by link: resolution, names, and a real download from a local web server
 check "a direct link is kept" "https://example.com/a.zip" "$(py 'print(b.resolve_mod_url("https://example.com/a.zip"))')"
