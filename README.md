@@ -90,6 +90,7 @@ Supervisor knobs: `FLUX_BACKUP_HOURS` (6), `FLUX_BACKUP_KEEP` (10), `FLUX_UPDATE
 
 ## Versions
 
+- 1.0.4: `protectmod` quotes a mod name with spaces, and `mod-protect` checks the file, not only that the line was typed in (it answered ok while the server refused); a name ban no longer replaces an account ban of the same name, and a name unban / whitelist removal no longer takes the account row of that name with it; the BeamMP update restarts the server only when it can count the players, so a server with the information packet off waits instead of being restarted on top of them (`status` gives `players: null` for it).
 - 1.0.3: mods by link (`mod-install-url`: a BeamNG.com repository page or a `.zip` link, downloaded in the background; a 159 MB mod from the repository in about 6 s, measured); a whitelist enforced by FluxAdmin (`whitelist-*`, in the backups).
 - 1.0.2: `flux.log` moved off the synced data volume to `/mnt/beammp/server/flux-logs/flux.log` (5 MB, one `.1`; an old one is moved there once); start-up banner; the weekly rebuild only when it has something to apply (new script `.github/ci/needs-rebuild.sh`).
 - 1.0.1: `beammp server-binary` warnings no longer end up inside the captured answer (a process

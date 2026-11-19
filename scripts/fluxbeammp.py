@@ -692,10 +692,21 @@ def cmd_mod_protect(name, on):
     on = to_bool(on)
     if not os.path.isfile(os.path.join(CLIENT, name)):
         fail("only an enabled mod can be protected")
-    live = console(f"protectmod {name} {'true' if on else 'false'}")
+    # The console splits on spaces: a name with one needs its quotes (measured on 3.9.3: unquoted,
+    # `protectmod Zz Space.zip true` answers "Expected 2 argument(s), instead got 3" and changes nothing).
+    live = console(f'protectmod "{name}" {"true" if on else "false"}')
     if live:
-        time.sleep(0.5)
-        mods_db()  # the server wrote the file: clean it
+        # `live` only says the line was typed in: the file says whether the server took it. The server
+        # writes mods.json itself, a moment later (a few seconds on a slow node).
+        took = False
+        for _ in range(10):
+            time.sleep(0.5)
+            db = mods_db()  # also cleans the file
+            if isinstance(db.get(name), dict) and bool(db[name].get("protected")) == on:
+                took = True
+                break
+        if not took:
+            fail("the server did not change the mod's protection (see the console)")
     else:
         db = mods_db()
         if isinstance(db.get(name), dict):
@@ -1114,7 +1125,10 @@ def cmd_ban(raw):
         fail("a ban needs a player name, a BeamMP account id or an IP")
     bans = read_json(BANS, [])
     key = ("beammp", ban["beammp"]) if ban["beammp"] else (("name", ban["name"].lower()) if ban["name"] else ("ip", ban["ip"]))
-    bans = [x for x in bans if not (isinstance(x, dict) and str(x.get(key[0]) or "").lower() == key[1])]
+    # A name ban replaces only an earlier name ban (a row with no account id): an account ban of a
+    # player of the same name is the stronger one and stays.
+    bans = [x for x in bans if not (isinstance(x, dict) and str(x.get(key[0]) or "").lower() == key[1]
+                                    and (key[0] != "name" or not x.get("beammp")))]
     bans.append({k: v for k, v in ban.items() if v != ""})
     write_text(BANS, json.dumps(bans, indent=2, ensure_ascii=False) + "\n")
     out({"ok": True, "bans": bans})
@@ -1128,7 +1142,7 @@ def cmd_unban(raw):
         if not isinstance(x, dict):
             continue
         hit = (b.get("beammp") and str(x.get("beammp") or "") == str(b["beammp"])) \
-            or (b.get("name") and str(x.get("name") or "").lower() == str(b["name"]).lower() and not (b.get("beammp") and x.get("beammp"))) \
+            or (b.get("name") and not x.get("beammp") and str(x.get("name") or "").lower() == str(b["name"]).lower()) \
             or (b.get("ip") and str(x.get("ip") or "") == str(b["ip"]))
         if not hit:
             keep.append(x)
@@ -1180,7 +1194,7 @@ def cmd_whitelist_remove(raw):
     wl = whitelist()
     keep = [x for x in wl["players"] if not (
         (p.get("beammp") and str(x.get("beammp") or "") == str(p["beammp"]))
-        or (not p.get("beammp") and p.get("name") and str(x.get("name") or "").lower() == str(p["name"]).lower()))]
+        or (not p.get("beammp") and p.get("name") and not x.get("beammp") and str(x.get("name") or "").lower() == str(p["name"]).lower()))]
     if len(keep) == len(wl["players"]):
         fail("not on the whitelist")
     # The last one off turns the whitelist off: an empty one on would lock everyone out.
@@ -1271,7 +1285,8 @@ def cmd_status():
         "auth": auth, "authReason": reason, "private": settings["Private"], "port": int(port),
         "name": settings["Name"], "map": settings["Map"], "mapAvailable": map_available(settings["Map"]),
         "maxPlayers": settings["MaxPlayers"], "maxCars": settings["MaxCars"],
-        "online": info is not None, "players": len(players) if info is not None else None, "playerNames": players,
+        # {} is a server with its information packet switched off: it answers, but cannot say who is on.
+        "online": info is not None, "players": len(players) if info else None, "playerNames": players,
         "mods": int((info or {}).get("modstotal") or 0) if info else None,
         "modsSize": int((info or {}).get("modstotalsize") or 0) if info else None,
         "clientVersion": (info or {}).get("clientversion"),
